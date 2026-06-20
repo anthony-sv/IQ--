@@ -81,11 +81,16 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\AST\Arena.cpp" />
+    <ClCompile Include="src\AST\AST.cpp" />
     <ClCompile Include="src\Diag\Diagnostics.cpp" />
     <ClCompile Include="src\Lex\Lexer.cpp" />
     <ClCompile Include="src\Source\SourceManager.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="include\iq\AST\Arena.h" />
+    <ClInclude Include="include\iq\AST\Casting.h" />
+    <ClInclude Include="include\iq\AST\AST.h" />
     <ClInclude Include="include\iq\Diag\Diagnostic.h" />
     <ClInclude Include="include\iq\Lex\Lexer.h" />
     <ClInclude Include="include\iq\Lex\Token.h" />
