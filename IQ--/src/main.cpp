@@ -1,11 +1,16 @@
+#include "iq/AST/Arena.h"
+#include "iq/AST/AstPrinter.h"
 #include "iq/Diag/Diagnostic.h"
 #include "iq/Lex/Lexer.h"
+#include "iq/Parse/Parser.h"
 #include "iq/Source/SourceManager.h"
 #include "iq/Support/StringInterner.h"
 
 #include <print>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -62,9 +67,30 @@ void dumpTokens(iq::SourceManager const& sm)
     }
 }
 
+void dumpAst(iq::SourceManager const& sm)
+{
+    iq::StringInterner interner;
+    iq::DiagnosticEngine diags(sm);
+    iq::Lexer lexer(sm, interner, diags);
+
+    iq::Arena arena;
+    iq::Parser parser(lexer.tokenize(), sm, interner, diags, arena);
+    iq::Module const module = parser.parseModule();
+
+    iq::AstPrinter printer(sm, interner);
+    printer.print(module);
+
+    diags.printAll();
+    if (diags.hasErrors())
+    {
+        std::println("\n{} error(s)", diags.errorCount());
+    }
+}
+
 void printUsage(std::string_view exe)
 {
-    std::println("usage: {} [--dump-tokens] [file.iq]", exe);
+    std::println("usage: {} [--dump-tokens | --dump-ast] [file.iq]", exe);
+    std::println("  default mode is --dump-ast.");
     std::println("  with no file, a built-in sample program is used.");
 }
 
@@ -82,6 +108,10 @@ int main(int argc, char* argv[])
         {
             dumpTokensMode = true;
         }
+        else if (arg == "--dump-ast")
+        {
+            dumpTokensMode = false;
+        }
         else if (arg == "-h" || arg == "--help")
         {
             printUsage(argv[0]);
@@ -93,7 +123,17 @@ int main(int argc, char* argv[])
         }
     }
 
-    dumpTokensMode = true;
+    auto const run = [dumpTokensMode](iq::SourceManager const& sm)
+    {
+        if (dumpTokensMode)
+        {
+            dumpTokens(sm);
+        }
+        else
+        {
+            dumpAst(sm);
+        }
+    };
 
     if (!file.empty())
     {
@@ -103,12 +143,12 @@ int main(int argc, char* argv[])
             std::println(stderr, "error: cannot open '{}'", file);
             return 1;
         }
-        dumpTokens(*sm);
+        run(*sm);
     }
     else
     {
         iq::SourceManager sm("<sample>", std::string(kSample));
-        dumpTokens(sm);
+        run(sm);
     }
 
     return 0;
