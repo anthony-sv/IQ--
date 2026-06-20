@@ -1,0 +1,45 @@
+# Visual Studio / VS Code
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+Win32/
+ARM64/
+
+# MSBuild / compiler artifacts
+*.obj
+*.pdb
+*.idb
+*.ilk
+*.exp
+*.lib
+*.exe
+*.dll
+*.log
+*.tlog
+*.ipch
+*.recipe
+*.lastbuildstate
+*.iobj
+*.ipdb
+*.pch
+*.res
+
+# vcpkg
+vcpkg_installed/
+vcpkg.applocal.log
+
+# CMake (in case it's added later)
+build/
+CMakeCache.txt
+CMakeFiles/
