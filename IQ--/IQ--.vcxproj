@@ -43,6 +43,9 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Label="Vcpkg">
+    <VcpkgEnableManifest>true</VcpkgEnableManifest>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -84,6 +87,7 @@
     <ClCompile Include="src\AST\Arena.cpp" />
     <ClCompile Include="src\AST\AST.cpp" />
     <ClCompile Include="src\AST\AstPrinter.cpp" />
+    <ClCompile Include="src\AST\DotPrinter.cpp" />
     <ClCompile Include="src\Diag\Diagnostics.cpp" />
     <ClCompile Include="src\Lex\Lexer.cpp" />
     <ClCompile Include="src\Parse\Parser.cpp" />
@@ -94,6 +98,7 @@
     <ClInclude Include="include\iq\AST\Casting.h" />
     <ClInclude Include="include\iq\AST\AST.h" />
     <ClInclude Include="include\iq\AST\AstPrinter.h" />
+    <ClInclude Include="include\iq\AST\DotPrinter.h" />
     <ClInclude Include="include\iq\Diag\Diagnostic.h" />
     <ClInclude Include="include\iq\Parse\Parser.h" />
     <ClInclude Include="include\iq\Lex\Lexer.h" />
@@ -106,6 +111,8 @@
   <ItemGroup>
     <None Include="..\.gitignore" />
     <None Include="..\README.md" />
+    <None Include="..\vcpkg-configuration.json" />
+    <None Include="..\vcpkg.json" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="..\LICENSE.txt" />

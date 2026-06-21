@@ -1,5 +1,6 @@
 #include "iq/AST/Arena.h"
 #include "iq/AST/AstPrinter.h"
+#include "iq/AST/DotPrinter.h"
 #include "iq/Diag/Diagnostic.h"
 #include "iq/Lex/Lexer.h"
 #include "iq/Parse/Parser.h"
@@ -39,6 +40,13 @@ fn main() {
 }
 )iq";
 
+enum class Mode
+{
+    DumpTokens,
+    DumpAstText,
+    DumpAstDot,
+};
+
 void dumpTokens(iq::SourceManager const& sm)
 {
     iq::StringInterner interner;
@@ -67,7 +75,7 @@ void dumpTokens(iq::SourceManager const& sm)
     }
 }
 
-void dumpAst(iq::SourceManager const& sm)
+void dumpAst(iq::SourceManager const& sm, bool asDot)
 {
     iq::StringInterner interner;
     iq::DiagnosticEngine diags(sm);
@@ -77,9 +85,18 @@ void dumpAst(iq::SourceManager const& sm)
     iq::Parser parser(lexer.tokenize(), sm, interner, diags, arena);
     iq::Module const module = parser.parseModule();
 
+    if (asDot)
+    {
+        // Pure DOT to stdout so it can be piped straight into `dot`. Diagnostics
+        // go to stderr to keep the graph text clean.
+        iq::DotPrinter printer(sm, interner);
+        printer.print(module);
+        diags.printAll();
+        return;
+    }
+
     iq::AstPrinter printer(sm, interner);
     printer.print(module);
-
     diags.printAll();
     if (diags.hasErrors())
     {
@@ -89,8 +106,10 @@ void dumpAst(iq::SourceManager const& sm)
 
 void printUsage(std::string_view exe)
 {
-    std::println("usage: {} [--dump-tokens | --dump-ast] [file.iq]", exe);
+    std::println("usage: {} [--dump-tokens | --dump-ast | --dump-ast=dot] [file.iq]", exe);
     std::println("  default mode is --dump-ast.");
+    std::println("  --dump-ast=dot emits Graphviz DOT; pipe it into the dot tool:");
+    std::println("      {} --dump-ast=dot prog.iq | dot -Tpng -o prog.png", exe);
     std::println("  with no file, a built-in sample program is used.");
 }
 
@@ -99,18 +118,22 @@ void printUsage(std::string_view exe)
 int main(int argc, char* argv[])
 {
     std::string_view file;
-    bool dumpTokensMode = false;
+    Mode mode = Mode::DumpAstText;
 
     for (int i = 1; i < argc; ++i)
     {
         std::string_view const arg = argv[i];
         if (arg == "--dump-tokens")
         {
-            dumpTokensMode = true;
+            mode = Mode::DumpTokens;
         }
         else if (arg == "--dump-ast")
         {
-            dumpTokensMode = false;
+            mode = Mode::DumpAstText;
+        }
+        else if (arg == "--dump-ast=dot")
+        {
+            mode = Mode::DumpAstDot;
         }
         else if (arg == "-h" || arg == "--help")
         {
@@ -123,15 +146,13 @@ int main(int argc, char* argv[])
         }
     }
 
-    auto const run = [dumpTokensMode](iq::SourceManager const& sm)
+    auto const run = [mode](iq::SourceManager const& sm)
     {
-        if (dumpTokensMode)
+        switch (mode)
         {
-            dumpTokens(sm);
-        }
-        else
-        {
-            dumpAst(sm);
+        case Mode::DumpTokens:  dumpTokens(sm);      break;
+        case Mode::DumpAstText: dumpAst(sm, false);  break;
+        case Mode::DumpAstDot:  dumpAst(sm, true);   break;
         }
     };
 
