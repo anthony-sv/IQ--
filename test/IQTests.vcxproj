@@ -80,6 +80,8 @@
     <ClCompile Include="test_main.cpp" />
     <ClCompile Include="Lexer_test.cpp" />
     <ClCompile Include="Parser_test.cpp" />
+    <ClCompile Include="Resolver_test.cpp" />
+    <ClCompile Include="TypeChecker_test.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\frontend\IQFrontend.vcxproj">

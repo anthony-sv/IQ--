@@ -21,6 +21,10 @@
     <ClInclude Include="include\iq\Lex\Token.h" />
     <ClInclude Include="include\iq\Lex\TokenKind.h" />
     <ClInclude Include="include\iq\Parse\Parser.h" />
+    <ClInclude Include="include\iq\Sema\Resolver.h" />
+    <ClInclude Include="include\iq\Sema\Sym.h" />
+    <ClInclude Include="include\iq\Sema\Type.h" />
+    <ClInclude Include="include\iq\Sema\TypeChecker.h" />
     <ClInclude Include="include\iq\Source\SourceLocation.h" />
     <ClInclude Include="include\iq\Source\SourceManager.h" />
     <ClInclude Include="include\iq\Support\StringInterner.h" />
@@ -33,6 +37,9 @@
     <ClCompile Include="src\Diag\Diagnostics.cpp" />
     <ClCompile Include="src\Lex\Lexer.cpp" />
     <ClCompile Include="src\Parse\Parser.cpp" />
+    <ClCompile Include="src\Sema\Resolver.cpp" />
+    <ClCompile Include="src\Sema\Type.cpp" />
+    <ClCompile Include="src\Sema\TypeChecker.cpp" />
     <ClCompile Include="src\Source\SourceManager.cpp" />
   </ItemGroup>
   <PropertyGroup Label="Globals">

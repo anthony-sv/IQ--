@@ -29,6 +29,13 @@ namespace iq
 
 using Symbol = StringInterner::Symbol;
 
+// Resolved binding, filled in by name resolution. Forward-declared so the AST
+// only ever holds a pointer to it (it lives in iq/Sema/Sym.h).
+struct Sym;
+
+// Resolved semantic type, filled in by the type checker (iq/Sema/Type.h).
+struct Type;
+
 // ---------------------------------------------------------------------------
 // Operators (decoupled from TokenKind so the AST owns its own vocabulary).
 // ---------------------------------------------------------------------------
@@ -212,6 +219,7 @@ struct IdentPattern : Pattern
 {
     static constexpr PatternKind Kind = PatternKind::Ident;
     Symbol name;
+    Sym* sym = nullptr;         // binding introduced here (set by name resolution)
 
     constexpr IdentPattern(SourceSpan s, Symbol n)
         : Pattern(Kind, s), name(n)
@@ -277,6 +285,7 @@ struct RestPattern : Pattern
 {
     static constexpr PatternKind Kind = PatternKind::Rest;
     Symbol name = StringInterner::kInvalid;
+    Sym* sym = nullptr;         // binding introduced by `..name` (name resolution)
 
     constexpr RestPattern(SourceSpan s, Symbol n)
         : Pattern(Kind, s), name(n)
@@ -319,6 +328,7 @@ struct Expr
 {
     ExprKind kind;
     SourceSpan span;
+    Type const* type = nullptr;     // resolved type, filled by the type checker
 
 protected:
     constexpr Expr(ExprKind k, SourceSpan s)
@@ -383,6 +393,7 @@ struct NameExpr : Expr
 {
     static constexpr ExprKind Kind = ExprKind::Name;
     Symbol name;
+    Sym* sym = nullptr;         // what this name refers to (set by name resolution)
 
     constexpr NameExpr(SourceSpan s, Symbol n)
         : Expr(Kind, s), name(n)
@@ -767,6 +778,7 @@ struct Decl
 {
     DeclKind kind;
     SourceSpan span;
+    Sym* sym = nullptr;             // binding for this declaration (name resolution)
 
 protected:
     constexpr Decl(DeclKind k, SourceSpan s)
@@ -782,6 +794,7 @@ struct Param
     Symbol name;
     TypeExpr* type;
     SourceSpan span;
+    Sym* sym = nullptr;         // binding introduced by this param (name resolution)
 };
 
 // `fn name(params) -> ret { body }`. returnType is null for void.

@@ -4,6 +4,9 @@
 #include "iq/Diag/Diagnostic.h"
 #include "iq/Lex/Lexer.h"
 #include "iq/Parse/Parser.h"
+#include "iq/Sema/Resolver.h"
+#include "iq/Sema/Type.h"
+#include "iq/Sema/TypeChecker.h"
 #include "iq/Source/SourceManager.h"
 #include "iq/Support/StringInterner.h"
 
@@ -45,6 +48,7 @@ enum class Mode
     DumpTokens,
     DumpAstText,
     DumpAstDot,
+    Check,
 };
 
 void dumpTokens(iq::SourceManager const& sm)
@@ -104,10 +108,41 @@ void dumpAst(iq::SourceManager const& sm, bool asDot)
     }
 }
 
+// Parse + name-resolve, reporting any diagnostics. No output on success beyond
+// a short summary.
+void check(iq::SourceManager const& sm)
+{
+    iq::StringInterner interner;
+    iq::DiagnosticEngine diags(sm);
+    iq::Lexer lexer(sm, interner, diags);
+
+    iq::Arena arena;
+    iq::Parser parser(lexer.tokenize(), sm, interner, diags, arena);
+    iq::Module module = parser.parseModule();
+
+    iq::Resolver resolver(sm, interner, diags, arena);
+    resolver.resolve(module);
+
+    iq::TypeContext types;
+    iq::TypeChecker checker(sm, interner, diags, types);
+    checker.check(module);
+
+    diags.printAll();
+    if (diags.hasErrors())
+    {
+        std::println("\n{} error(s)", diags.errorCount());
+    }
+    else
+    {
+        std::println("ok: {} top-level declaration(s), no errors", module.decls.size());
+    }
+}
+
 void printUsage(std::string_view exe)
 {
-    std::println("usage: {} [--dump-tokens | --dump-ast | --dump-ast=dot] [file.iq]", exe);
+    std::println("usage: {} [--dump-tokens | --dump-ast | --dump-ast=dot | --check] [file.iq]", exe);
     std::println("  default mode is --dump-ast.");
+    std::println("  --check parses, resolves names, and type-checks, reporting any errors.");
     std::println("  --dump-ast=dot emits Graphviz DOT; pipe it into the dot tool:");
     std::println("      {} --dump-ast=dot prog.iq | dot -Tpng -o prog.png", exe);
     std::println("  with no file, a built-in sample program is used.");
@@ -135,6 +170,10 @@ int main(int argc, char* argv[])
         {
             mode = Mode::DumpAstDot;
         }
+        else if (arg == "--check")
+        {
+            mode = Mode::Check;
+        }
         else if (arg == "-h" || arg == "--help")
         {
             printUsage(argv[0]);
@@ -153,6 +192,7 @@ int main(int argc, char* argv[])
         case Mode::DumpTokens:  dumpTokens(sm);      break;
         case Mode::DumpAstText: dumpAst(sm, false);  break;
         case Mode::DumpAstDot:  dumpAst(sm, true);   break;
+        case Mode::Check:       check(sm);           break;
         }
     };
 
