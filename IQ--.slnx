@@ -2,13 +2,15 @@
   <Configurations>
     <Platform Name="x64" />
   </Configurations>
-  <Project Path="frontend/IQFrontend.vcxproj" Id="fc88de16-6f52-4859-98f0-616f5da50867" />
   <Folder Name="/Solution Items/">
+    <File Path="iqrun.cs" />
     <File Path="LICENSE.txt" />
     <File Path="README.md" />
     <File Path="vcpkg-configuration.json" />
     <File Path="vcpkg.json" />
   </Folder>
+  <Project Path="backend/IQBackend.vcxproj" Id="c233ebd8-1b24-4b59-9316-db698e6169fd" />
   <Project Path="driver/IQ--.vcxproj" Id="eab8aa9c-8fa1-4430-adb4-b708205ee005" />
+  <Project Path="frontend/IQFrontend.vcxproj" Id="fc88de16-6f52-4859-98f0-616f5da50867" />
   <Project Path="test/IQTests.vcxproj" Id="9c0d49e8-3257-4eb2-848c-4354ba13e113" />
 </Solution>

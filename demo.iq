@@ -1,0 +1,17 @@
+fn add(a: i32, b: i32) -> i32 { ret a + b; }
+
+fn sum_to(n: i32) -> i32 {
+    let acc = 0;
+    for i in 0..n {
+        acc += i;
+    }
+    ret acc;
+}
+
+fn log(msg: string) { print(msg); }
+
+fn main() {
+    log("hello from IQ--");
+    print(add(3, 4));
+    print(sum_to(10));
+}

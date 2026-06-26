@@ -1,6 +1,7 @@
 #include "iq/AST/Arena.h"
 #include "iq/AST/AstPrinter.h"
 #include "iq/AST/DotPrinter.h"
+#include "iq/CodeGen/CodeGen.h"
 #include "iq/Diag/Diagnostic.h"
 #include "iq/Lex/Lexer.h"
 #include "iq/Parse/Parser.h"
@@ -10,6 +11,7 @@
 #include "iq/Source/SourceManager.h"
 #include "iq/Support/StringInterner.h"
 
+#include <fstream>
 #include <print>
 #include <string>
 #include <string_view>
@@ -49,6 +51,7 @@ enum class Mode
     DumpAstText,
     DumpAstDot,
     Check,
+    EmitLlvm,
 };
 
 void dumpTokens(iq::SourceManager const& sm)
@@ -138,11 +141,60 @@ void check(iq::SourceManager const& sm)
     }
 }
 
+// Run the full pipeline and emit LLVM IR. With an output path the IR is written
+// to that file; otherwise it goes to stdout (diagnostics always go to stderr).
+// Emits nothing if the program does not check.
+int emitLlvm(iq::SourceManager const& sm, std::string_view outputPath)
+{
+    iq::StringInterner interner;
+    iq::DiagnosticEngine diags(sm);
+    iq::Lexer lexer(sm, interner, diags);
+
+    iq::Arena arena;
+    iq::Parser parser(lexer.tokenize(), sm, interner, diags, arena);
+    iq::Module module = parser.parseModule();
+
+    iq::Resolver resolver(sm, interner, diags, arena);
+    resolver.resolve(module);
+
+    iq::TypeContext types;
+    iq::TypeChecker checker(sm, interner, diags, types);
+    checker.check(module);
+
+    iq::CodeGen codegen(sm, interner, diags, types);
+    std::string ir = codegen.run(module);
+
+    if (diags.hasErrors())
+    {
+        diags.printAll();
+        std::println(stderr, "\n{} error(s); no output produced", diags.errorCount());
+        return 1;
+    }
+
+    if (!outputPath.empty())
+    {
+        std::ofstream out(std::string{ outputPath }, std::ios::binary);
+        if (!out)
+        {
+            std::println(stderr, "error: cannot write '{}'", outputPath);
+            return 1;
+        }
+        out << ir;
+    }
+    else
+    {
+        std::print("{}", ir);
+    }
+    return 0;
+}
+
 void printUsage(std::string_view exe)
 {
-    std::println("usage: {} [--dump-tokens | --dump-ast | --dump-ast=dot | --check] [file.iq]", exe);
+    std::println("usage: {} [--dump-tokens | --dump-ast | --dump-ast=dot | --check | --emit-llvm] [file.iq]", exe);
     std::println("  default mode is --dump-ast.");
     std::println("  --check parses, resolves names, and type-checks, reporting any errors.");
+    std::println("  --emit-llvm writes LLVM IR (to stdout, or to a file with -o):");
+    std::println("      {} --emit-llvm prog.iq -o prog.ll && clang prog.ll -o prog.exe", exe);
     std::println("  --dump-ast=dot emits Graphviz DOT; pipe it into the dot tool:");
     std::println("      {} --dump-ast=dot prog.iq | dot -Tpng -o prog.png", exe);
     std::println("  with no file, a built-in sample program is used.");
@@ -153,12 +205,20 @@ void printUsage(std::string_view exe)
 int main(int argc, char* argv[])
 {
     std::string_view file;
+    std::string_view outputPath;
     Mode mode = Mode::DumpAstText;
 
     for (int i = 1; i < argc; ++i)
     {
         std::string_view const arg = argv[i];
-        if (arg == "--dump-tokens")
+        if (arg == "-o")
+        {
+            if (i + 1 < argc)
+            {
+                outputPath = argv[++i];
+            }
+        }
+        else if (arg == "--dump-tokens")
         {
             mode = Mode::DumpTokens;
         }
@@ -174,6 +234,10 @@ int main(int argc, char* argv[])
         {
             mode = Mode::Check;
         }
+        else if (arg == "--emit-llvm")
+        {
+            mode = Mode::EmitLlvm;
+        }
         else if (arg == "-h" || arg == "--help")
         {
             printUsage(argv[0]);
@@ -185,15 +249,17 @@ int main(int argc, char* argv[])
         }
     }
 
-    auto const run = [mode](iq::SourceManager const& sm)
+    auto const run = [mode, outputPath](iq::SourceManager const& sm) -> int
     {
         switch (mode)
         {
-        case Mode::DumpTokens:  dumpTokens(sm);      break;
-        case Mode::DumpAstText: dumpAst(sm, false);  break;
-        case Mode::DumpAstDot:  dumpAst(sm, true);   break;
-        case Mode::Check:       check(sm);           break;
+        case Mode::DumpTokens:  dumpTokens(sm);      return 0;
+        case Mode::DumpAstText: dumpAst(sm, false);  return 0;
+        case Mode::DumpAstDot:  dumpAst(sm, true);   return 0;
+        case Mode::Check:       check(sm);           return 0;
+        case Mode::EmitLlvm:    return emitLlvm(sm, outputPath);
         }
+        return 0;
     };
 
     if (!file.empty())
@@ -204,13 +270,9 @@ int main(int argc, char* argv[])
             std::println(stderr, "error: cannot open '{}'", file);
             return 1;
         }
-        run(*sm);
-    }
-    else
-    {
-        iq::SourceManager sm("<sample>", std::string(kSample));
-        run(sm);
+        return run(*sm);
     }
 
-    return 0;
+    iq::SourceManager sm("<sample>", std::string(kSample));
+    return run(sm);
 }
