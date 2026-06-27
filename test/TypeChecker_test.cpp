@@ -191,6 +191,69 @@ TEST_CASE("typecheck: array literal infers a fixed-length array type", "[typeche
     REQUIRE(t->elem == tc.types().i32());
 }
 
+TEST_CASE("typecheck: a non-void function must return on every path", "[typecheck]")
+{
+    TestCheck tc("fn f() -> i32 { let x = 1; }");
+    REQUIRE(tc.hasErrors());
+}
+
+TEST_CASE("typecheck: an if without else does not satisfy the return", "[typecheck]")
+{
+    TestCheck tc("fn f(c: bool) -> i32 { if c { ret 1; } }");
+    REQUIRE(tc.hasErrors());
+}
+
+TEST_CASE("typecheck: if/else both returning satisfies the return", "[typecheck]")
+{
+    TestCheck tc("fn f(c: bool) -> i32 { if c { ret 1; } else { ret 2; } }");
+    REQUIRE_FALSE(tc.hasErrors());
+}
+
+TEST_CASE("typecheck: while-true with no break satisfies the return", "[typecheck]")
+{
+    TestCheck tc("fn f() -> i32 { while true { ret 1; } }");
+    REQUIRE_FALSE(tc.hasErrors());
+}
+
+TEST_CASE("typecheck: a while-true that can break does not satisfy the return", "[typecheck]")
+{
+    TestCheck tc("fn f() -> i32 { while true { break; } }");
+    REQUIRE(tc.hasErrors());
+}
+
+TEST_CASE("typecheck: tuple field access yields the field's type", "[typecheck]")
+{
+    using namespace iq;
+    TestCheck tc("fn main() { let p = (1, 2); let x = p.1; }");
+    REQUIRE_FALSE(tc.hasErrors());
+    auto const* fn = cast<FnDecl>(tc.module().decls[0]);
+    auto const* let = cast<LetStmt>(fn->body->statements[1]);
+    auto const* ident = cast<IdentPattern>(let->pattern);
+    REQUIRE(ident->sym->type == tc.types().i32());
+}
+
+TEST_CASE("typecheck: an out-of-range tuple field is an error", "[typecheck]")
+{
+    TestCheck tc("fn main() { let p = (1, 2); let x = p.2; }");
+    REQUIRE(tc.hasErrors());
+}
+
+TEST_CASE("typecheck: array length can be a const expression", "[typecheck]")
+{
+    using namespace iq;
+    TestCheck tc(R"(
+        const N: i32 = 3;
+        fn main() { let xs: [i32; N + 1] = [1, 2, 3, 4]; }
+    )");
+    REQUIRE_FALSE(tc.hasErrors());
+
+    auto const* fn = cast<FnDecl>(tc.module().decls[1]);
+    auto const* let = cast<LetStmt>(fn->body->statements[0]);
+    auto const* ident = cast<IdentPattern>(let->pattern);
+    REQUIRE(ident->sym->type->kind == Type::Kind::Array);
+    REQUIRE(ident->sym->type->arrayLen == 4);
+}
+
 TEST_CASE("typecheck: rest destructuring gives the slice an array type", "[typecheck]")
 {
     using namespace iq;

@@ -104,8 +104,41 @@ TEST_CASE("codegen: a cast lowers to the right conversion op", "[codegen]")
     REQUIRE(cg.contains("sext i32"));
 }
 
-TEST_CASE("codegen: arrays are reported as not yet supported", "[codegen]")
+TEST_CASE("codegen: an array literal lowers to a fixed-size alloca + stores", "[codegen]")
 {
-    TestCodeGen cg("fn main() { let xs = [1, 2, 3]; }");
-    REQUIRE(cg.hasErrors());
+    TestCodeGen cg("fn main() { let xs = [1, 2, 3, 4]; print(xs[2]); }");
+    REQUIRE_FALSE(cg.hasErrors());
+    REQUIRE(cg.contains("alloca [4 x i32]"));
+    REQUIRE(cg.contains("getelementptr [4 x i32]"));
+}
+
+TEST_CASE("codegen: rest destructuring copies a contiguous slice", "[codegen]")
+{
+    TestCodeGen cg("fn main() { let xs = [1, 2, 3, 4]; let [first, ..rest, last] = xs; }");
+    REQUIRE_FALSE(cg.hasErrors());
+    REQUIRE(cg.contains("alloca [2 x i32]"));   // rest : [i32; 2]
+    REQUIRE(cg.contains("load [2 x i32]"));     // the slice copy
+}
+
+TEST_CASE("codegen: from-end index computes len - k", "[codegen]")
+{
+    TestCodeGen cg("fn main() { let xs = [1, 2, 3]; print(xs[^1]); }");
+    REQUIRE_FALSE(cg.hasErrors());
+    REQUIRE(cg.contains("sub i32 3,"));         // len - k
+}
+
+TEST_CASE("codegen: tuple field access lowers to a struct GEP", "[codegen]")
+{
+    TestCodeGen cg("fn main() { let p = (10, 20); print(p.1); }");
+    REQUIRE_FALSE(cg.hasErrors());
+    REQUIRE(cg.contains("getelementptr {"));
+}
+
+TEST_CASE("codegen: passing an aggregate to a function is rejected for now", "[codegen]")
+{
+    TestCodeGen cg(R"(
+        fn takes(a: i32) { print(a); }
+        fn main() { let xs = [1, 2]; takes(xs[0]); }
+    )");
+    REQUIRE_FALSE(cg.hasErrors());   // passing a scalar element is fine
 }

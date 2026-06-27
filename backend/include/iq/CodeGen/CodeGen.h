@@ -41,6 +41,7 @@ public:
 private:
     std::string llvmType(Type const* t);
     std::string llvmReturnType(FnDecl const* fn);
+    static bool isAggregate(Type const* t);
 
     void emitConstGlobal(ConstDecl const* c);
     void emitFn(FnDecl const* fn);
@@ -71,6 +72,35 @@ private:
 
     std::string allocaFor(Sym const* sym);         // entry-block slot for a binding
     std::string addrOf(Sym const* sym) const;      // slot/global pointer name
+
+    // Aggregate (array/tuple) helpers.
+    std::string freshAlloca(std::string const& llTy);
+    void copyAggregate(
+        Type const* t,
+        std::string const& src,
+        std::string const& dst
+    );
+    std::string gepElement(
+        Type const* arrayType,
+        std::string const& base,
+        std::string const& indexTy,
+        std::string const& index
+    );
+    std::string gepField(
+        Type const* tupleType,
+        std::string const& base,
+        std::size_t field
+    );
+    void storeInto(
+        Type const* t,
+        std::string const& valueOrPtr,
+        std::string const& dst
+    );
+    void bindPatternFromPtr(
+        Pattern const* pattern,
+        Type const* type,
+        std::string const& src
+    );
 
     std::string numericLiteral(NumberLiteral const* lit) const;
     std::string internCString(std::string_view bytes);  // -> global ptr name

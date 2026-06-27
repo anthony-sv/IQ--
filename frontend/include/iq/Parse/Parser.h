@@ -82,6 +82,7 @@ private:
     Expr* parseString(Token const& tok);
     Expr* parseCallTail(Expr* callee);
     Expr* parseIndexTail(Expr* base);
+    Expr* parseFieldTail(Expr* base);
 
     // --- types & patterns -------------------------------------------------
     TypeExpr* parseType();

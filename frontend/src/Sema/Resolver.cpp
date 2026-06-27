@@ -301,6 +301,10 @@ void Resolver::resolveExpr(Expr* expr)
         return;
     }
 
+    case ExprKind::Field:
+        resolveExpr(cast<FieldExpr>(expr)->base);
+        return;
+
     case ExprKind::Cast:
     {
         auto* cst = cast<CastExpr>(expr);

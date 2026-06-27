@@ -36,6 +36,7 @@ static_assert(kArenaSafe<BinaryExpr>);
 static_assert(kArenaSafe<AssignExpr>);
 static_assert(kArenaSafe<CallExpr>);
 static_assert(kArenaSafe<IndexExpr>);
+static_assert(kArenaSafe<FieldExpr>);
 static_assert(kArenaSafe<CastExpr>);
 static_assert(kArenaSafe<RangeExpr>);
 static_assert(kArenaSafe<ArrayExpr>);

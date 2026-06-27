@@ -117,6 +117,32 @@ TEST_CASE("parser: array destructuring with bindable rest", "[parser]")
     REQUIRE(iq::isa<iq::IdentPattern>(arr->elements[2]));
 }
 
+TEST_CASE("parser: tuple field access parses to a Field expr", "[parser]")
+{
+    using namespace iq;
+    TestParse p("fn main() { let x = t.0; }");
+    auto const* fn = cast<FnDecl>(p.module().decls[0]);
+    auto const* let = cast<LetStmt>(fn->body->statements[0]);
+    auto const* field = dyn_cast<FieldExpr>(let->init);
+    REQUIRE(field != nullptr);
+    REQUIRE(field->index == 0);
+    REQUIRE(iq::isa<NameExpr>(field->base));
+}
+
+TEST_CASE("parser: chained tuple fields split a merged number token", "[parser]")
+{
+    using namespace iq;
+    TestParse p("fn main() { let x = t.0.1; }");      // lexes t '.' 0.1
+    auto const* fn = cast<FnDecl>(p.module().decls[0]);
+    auto const* let = cast<LetStmt>(fn->body->statements[0]);
+    auto const* outer = dyn_cast<FieldExpr>(let->init);
+    REQUIRE(outer != nullptr);
+    REQUIRE(outer->index == 1);
+    auto const* inner = dyn_cast<FieldExpr>(outer->base);
+    REQUIRE(inner != nullptr);
+    REQUIRE(inner->index == 0);
+}
+
 TEST_CASE("parser: recovers after a broken declaration", "[parser]")
 {
     TestParse p("fn broken( {}\nfn good() {}");

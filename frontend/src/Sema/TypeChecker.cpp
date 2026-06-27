@@ -6,13 +6,170 @@
 #include "iq/Source/SourceManager.h"
 #include "iq/Support/StringInterner.h"
 
+#include <cstdint>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace iq
 {
+
+namespace
+{
+
+// Is there a `break` that exits *this* loop somewhere in `stmt`? Descends into
+// blocks and ifs but not into nested loops (which capture their own breaks).
+bool hasBreakForThisLoop(Stmt const* stmt)
+{
+    switch (stmt->kind)
+    {
+    case StmtKind::Break:
+        return true;
+    case StmtKind::Block:
+        for (Stmt const* s : cast<BlockStmt>(stmt)->statements)
+        {
+            if (hasBreakForThisLoop(s))
+            {
+                return true;
+            }
+        }
+        return false;
+    case StmtKind::If:
+    {
+        auto const* i = cast<IfStmt>(stmt);
+        return hasBreakForThisLoop(i->thenBranch)
+            || (i->elseBranch && hasBreakForThisLoop(i->elseBranch));
+    }
+    case StmtKind::While:
+    case StmtKind::For:
+        return false;       // a nested loop captures its own breaks
+    default:
+        return false;
+    }
+}
+
+// Does control flow always leave this statement via a return (or by diverging)?
+// Used to require that every path of a non-void function returns a value.
+bool alwaysReturns(Stmt const* stmt)
+{
+    switch (stmt->kind)
+    {
+    case StmtKind::Return:
+        return true;
+    case StmtKind::Block:
+        for (Stmt const* s : cast<BlockStmt>(stmt)->statements)
+        {
+            if (alwaysReturns(s))
+            {
+                return true;
+            }
+        }
+        return false;
+    case StmtKind::If:
+    {
+        auto const* i = cast<IfStmt>(stmt);
+        return i->elseBranch
+            && alwaysReturns(i->thenBranch)
+            && alwaysReturns(i->elseBranch);
+    }
+    case StmtKind::While:
+    {
+        // `while true { ... }` with no break never falls through -- it diverges,
+        // which is fine for a non-void function (control never leaves).
+        auto const* w = cast<WhileStmt>(stmt);
+        auto const* cond = dyn_cast<BoolLiteral>(w->cond);
+        return cond && cond->value && !hasBreakForThisLoop(w->body);
+    }
+    default:
+        return false;
+    }
+}
+
+// Evaluate a compile-time integer constant expression (for array lengths):
+// integer literals, references to integer consts, unary minus, and +-*/% on
+// constants. Returns nullopt if it is not a constant integer.
+std::optional<std::int64_t> evalConstInt(
+    SourceManager const& sm,
+    Expr const* expr,
+    int depth = 0
+)
+{
+    if (depth > 32)
+    {
+        return std::nullopt;
+    }
+    switch (expr->kind)
+    {
+    case ExprKind::NumberLiteral:
+    {
+        auto const* lit = cast<NumberLiteral>(expr);
+        if (lit->isFloat)
+        {
+            return std::nullopt;
+        }
+        std::int64_t value = 0;
+        for (char const c : sm.spanText(lit->span))
+        {
+            if (c < '0' || c > '9')
+            {
+                break;
+            }
+            value = value * 10 + (c - '0');
+        }
+        return value;
+    }
+    case ExprKind::Name:
+    {
+        auto const* name = cast<NameExpr>(expr);
+        if (name->sym && name->sym->kind == SymKind::GlobalConst)
+        {
+            if (auto const* c = dyn_cast<ConstDecl>(name->sym->decl); c && c->init)
+            {
+                return evalConstInt(sm, c->init, depth + 1);
+            }
+        }
+        return std::nullopt;
+    }
+    case ExprKind::Unary:
+    {
+        auto const* un = cast<UnaryExpr>(expr);
+        if (un->op != UnaryOp::Neg)
+        {
+            return std::nullopt;
+        }
+        if (auto v = evalConstInt(sm, un->operand, depth + 1))
+        {
+            return -*v;
+        }
+        return std::nullopt;
+    }
+    case ExprKind::Binary:
+    {
+        auto const* bin = cast<BinaryExpr>(expr);
+        auto l = evalConstInt(sm, bin->lhs, depth + 1);
+        auto r = evalConstInt(sm, bin->rhs, depth + 1);
+        if (!l || !r)
+        {
+            return std::nullopt;
+        }
+        switch (bin->op)
+        {
+        case BinaryOp::Add: return *l + *r;
+        case BinaryOp::Sub: return *l - *r;
+        case BinaryOp::Mul: return *l * *r;
+        case BinaryOp::Div: return *r != 0 ? std::optional<std::int64_t>{ *l / *r } : std::nullopt;
+        case BinaryOp::Rem: return *r != 0 ? std::optional<std::int64_t>{ *l % *r } : std::nullopt;
+        default:            return std::nullopt;
+        }
+    }
+    default:
+        return std::nullopt;
+    }
+}
+
+} // namespace
 
 TypeChecker::TypeChecker(
     SourceManager const& sm,
@@ -98,23 +255,15 @@ Type const* TypeChecker::resolveType(TypeExpr const* type)
     {
         auto const* arr = cast<ArrayType>(type);
         Type const* element = resolveType(arr->element);
-        // v0: the length must be a plain integer literal.
         std::uint64_t len = 0;
-        if (auto const* lit = dyn_cast<NumberLiteral>(arr->size); lit && !lit->isFloat)
+        if (auto const value = evalConstInt(m_sm, arr->size); value && *value >= 0)
         {
-            std::string_view const digits = m_sm.spanText(lit->span);
-            for (char const c : digits)
-            {
-                if (c < '0' || c > '9')
-                {
-                    break;
-                }
-                len = len * 10 + static_cast<std::uint64_t>(c - '0');
-            }
+            len = static_cast<std::uint64_t>(*value);
         }
         else
         {
-            errorAt(arr->size->span, "array length must be an integer literal");
+            errorAt(arr->size->span,
+                    "array length must be a non-negative constant integer");
         }
         return m_types.arrayOf(element, len);
     }
@@ -211,6 +360,16 @@ void TypeChecker::checkFn(FnDecl* fn)
 {
     m_currentReturn = fn->returnType ? resolveType(fn->returnType) : m_types.voidType();
     checkBlock(fn->body);
+
+    if (m_currentReturn != m_types.voidType()
+        && m_currentReturn != m_types.errorType()
+        && !alwaysReturns(fn->body))
+    {
+        errorAt(fn->span, std::format(
+            "not all paths through '{}' return a value of type '{}'",
+            m_interner.lookup(fn->name), typeToString(m_currentReturn)));
+    }
+
     m_currentReturn = nullptr;
 }
 
@@ -591,6 +750,32 @@ Type const* TypeChecker::infer(Expr* expr)
         {
             errorAt(idx->span, std::format(
                 "cannot index a value of type '{}'", typeToString(base)));
+        }
+        break;
+    }
+
+    case ExprKind::Field:
+    {
+        auto* field = cast<FieldExpr>(expr);
+        Type const* base = infer(field->base);
+        if (base->kind == Type::Kind::Tuple)
+        {
+            if (field->index < base->elems.size())
+            {
+                result = base->elems[field->index];
+            }
+            else
+            {
+                errorAt(field->span, std::format(
+                    "tuple of type '{}' has no field .{}",
+                    typeToString(base), field->index));
+            }
+        }
+        else if (base != m_types.errorType())
+        {
+            errorAt(field->span, std::format(
+                "cannot access field .{} of non-tuple type '{}'",
+                field->index, typeToString(base)));
         }
         break;
     }

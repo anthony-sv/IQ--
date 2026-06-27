@@ -67,8 +67,28 @@ std::string CodeGen::llvmType(Type const* t)
     case Type::Kind::String: return "ptr";
     case Type::Kind::UntypedInt: return "i32";
     case Type::Kind::UntypedFloat: return "double";
+    case Type::Kind::Array:
+        return std::format("[{} x {}]", t->arrayLen, llvmType(t->elem));
+    case Type::Kind::Tuple:
+    {
+        std::string out = "{ ";
+        bool first = true;
+        for (Type const* e : t->elems)
+        {
+            if (!first) { out += ", "; }
+            out += llvmType(e);
+            first = false;
+        }
+        out += " }";
+        return out;
+    }
     default: return "i32";
     }
+}
+
+bool CodeGen::isAggregate(Type const* t)
+{
+    return t && (t->kind == Type::Kind::Array || t->kind == Type::Kind::Tuple);
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +167,142 @@ std::string CodeGen::addrOf(Sym const* sym) const
         return it->second;
     }
     return "%bad.addr";
+}
+
+// A fresh, unnamed-purpose stack slot in the entry block (for aggregate temps).
+std::string CodeGen::freshAlloca(std::string const& llTy)
+{
+    std::string name = std::format("%agg{}", m_temp++);
+    m_entry += std::format("  {} = alloca {}\n", name, llTy);
+    return name;
+}
+
+// Copy a whole aggregate (array/tuple) from one slot to another using a
+// first-class aggregate load/store -- no memcpy intrinsic or size math needed.
+void CodeGen::copyAggregate(Type const* t, std::string const& src, std::string const& dst)
+{
+    std::string ty = llvmType(t);
+    std::string v = freshTemp();
+    line(std::format("{} = load {}, ptr {}", v, ty, src));
+    line(std::format("store {} {}, ptr {}", ty, v, dst));
+}
+
+// Pointer to element `index` of an array at `base`.
+std::string CodeGen::gepElement(
+    Type const* arrayType,
+    std::string const& base,
+    std::string const& indexTy,
+    std::string const& index
+)
+{
+    std::string p = freshTemp();
+    line(std::format("{} = getelementptr {}, ptr {}, i64 0, {} {}",
+                     p, llvmType(arrayType), base, indexTy, index));
+    return p;
+}
+
+// Pointer to field `field` of a tuple struct at `base`.
+std::string CodeGen::gepField(Type const* tupleType, std::string const& base, std::size_t field)
+{
+    std::string p = freshTemp();
+    line(std::format("{} = getelementptr {}, ptr {}, i64 0, i32 {}",
+                     p, llvmType(tupleType), base, field));
+    return p;
+}
+
+// Store a value (scalar) or copy an aggregate (from a source pointer) into dst.
+void CodeGen::storeInto(Type const* t, std::string const& valueOrPtr, std::string const& dst)
+{
+    if (isAggregate(t))
+    {
+        copyAggregate(t, valueOrPtr, dst);
+    }
+    else
+    {
+        line(std::format("store {} {}, ptr {}", llvmType(t), valueOrPtr, dst));
+    }
+}
+
+// Bind a (possibly nested) pattern against a value of type `type` living at
+// `src`, allocating slots and copying out each piece. Powers destructuring.
+void CodeGen::bindPatternFromPtr(Pattern const* pattern, Type const* type, std::string const& src)
+{
+    switch (pattern->kind)
+    {
+    case PatternKind::Wildcard:
+        return;
+
+    case PatternKind::Ident:
+    {
+        Sym const* sym = cast<IdentPattern>(pattern)->sym;
+        std::string slot = allocaFor(sym);
+        if (isAggregate(type))
+        {
+            copyAggregate(type, src, slot);
+        }
+        else
+        {
+            std::string v = freshTemp();
+            line(std::format("{} = load {}, ptr {}", v, llvmType(type), src));
+            line(std::format("store {} {}, ptr {}", llvmType(type), v, slot));
+        }
+        return;
+    }
+
+    case PatternKind::Tuple:
+    {
+        auto const* tup = cast<TuplePattern>(pattern);
+        for (std::size_t i = 0; i < tup->elements.size() && i < type->elems.size(); ++i)
+        {
+            std::string fieldPtr = gepField(type, src, i);
+            bindPatternFromPtr(tup->elements[i], type->elems[i], fieldPtr);
+        }
+        return;
+    }
+
+    case PatternKind::Array:
+    {
+        auto const* arr = cast<ArrayPattern>(pattern);
+        Type const* elem = type->elem;
+        std::uint64_t const n = type->arrayLen;
+
+        std::size_t fixed = 0;
+        for (Pattern const* p : arr->elements)
+        {
+            if (!isa<RestPattern>(p)) { ++fixed; }
+        }
+        std::uint64_t const restLen = n > fixed ? n - fixed : 0;
+
+        std::uint64_t srcIndex = 0;
+        for (Pattern const* p : arr->elements)
+        {
+            if (auto const* rest = dyn_cast<RestPattern>(p))
+            {
+                if (rest->sym)
+                {
+                    // Load the contiguous [restLen x elem] slice and copy it out.
+                    std::string slicePtr = gepElement(type, src, "i64", std::to_string(srcIndex));
+                    std::string sliceTy = std::format("[{} x {}]", restLen, llvmType(elem));
+                    std::string slot = allocaFor(rest->sym);
+                    std::string v = freshTemp();
+                    line(std::format("{} = load {}, ptr {}", v, sliceTy, slicePtr));
+                    line(std::format("store {} {}, ptr {}", sliceTy, v, slot));
+                }
+                srcIndex += restLen;
+            }
+            else
+            {
+                std::string elemPtr = gepElement(type, src, "i64", std::to_string(srcIndex));
+                bindPatternFromPtr(p, elem, elemPtr);
+                ++srcIndex;
+            }
+        }
+        return;
+    }
+
+    case PatternKind::Rest:
+        return;     // handled within the enclosing array pattern
+    }
 }
 
 std::string CodeGen::numericLiteral(NumberLiteral const* lit) const
@@ -352,18 +508,23 @@ void CodeGen::emitStmt(Stmt const* stmt)
     case StmtKind::Let:
     {
         auto const* let = cast<LetStmt>(stmt);
-        auto const* ident = dyn_cast<IdentPattern>(let->pattern);
-        if (!ident)
+        if (!let->init)
         {
-            unsupported(let->span, "destructuring patterns");
-            return;
+            return;     // declaration without initializer: nothing to emit
         }
-        std::string slot = allocaFor(ident->sym);
-        if (let->init)
+        Type const* valueType = let->init->type;
+
+        if (auto const* ident = dyn_cast<IdentPattern>(let->pattern))
         {
+            std::string slot = allocaFor(ident->sym);
             std::string v = emitExpr(let->init);
-            line(std::format("store {} {}, ptr {}",
-                             llvmType(ident->sym->type), v, slot));
+            storeInto(valueType, v, slot);
+        }
+        else
+        {
+            // Destructuring: materialize the source aggregate, then copy pieces.
+            std::string src = emitExpr(let->init);
+            bindPatternFromPtr(let->pattern, valueType, src);
         }
         return;
     }
@@ -381,6 +542,11 @@ void CodeGen::emitStmt(Stmt const* stmt)
         }
         else if (ret->value)
         {
+            if (isAggregate(ret->value->type))
+            {
+                unsupported(ret->span, "returning an array or tuple from a function");
+                return;
+            }
             std::string v = emitExpr(ret->value);
             terminate(std::format("ret {} {}", llvmType(ret->value->type), v));
         }
@@ -545,10 +711,13 @@ std::string CodeGen::emitExpr(Expr const* expr)
     case ExprKind::Name:
     {
         auto const* name = cast<NameExpr>(expr);
-        std::string ty = llvmType(name->type);
         std::string addr = addrOf(name->sym);
+        if (isAggregate(name->type))
+        {
+            return addr;        // the slot itself is the aggregate (a pointer)
+        }
         std::string t = freshTemp();
-        line(std::format("{} = load {}, ptr {}", t, ty, addr));
+        line(std::format("{} = load {}, ptr {}", t, llvmType(name->type), addr));
         return t;
     }
 
@@ -585,8 +754,16 @@ std::string CodeGen::emitExpr(Expr const* expr)
             unsupported(assign->span, "assignment to this kind of target");
             return "0";
         }
-        std::string ty = llvmType(target->type);
         std::string addr = addrOf(target->sym);
+
+        if (isAggregate(target->type))
+        {
+            std::string src = emitExpr(assign->value);     // a pointer
+            copyAggregate(target->type, src, addr);
+            return addr;
+        }
+
+        std::string ty = llvmType(target->type);
         std::string rhs = emitExpr(assign->value);
 
         if (assign->op == AssignOp::Assign)
@@ -621,14 +798,92 @@ std::string CodeGen::emitExpr(Expr const* expr)
         return emitCast(cast<CastExpr>(expr));
 
     case ExprKind::Index:
-        unsupported(expr->span, "array indexing");
-        return "0";
+    {
+        auto const* idx = cast<IndexExpr>(expr);
+        Type const* arrayType = idx->base->type;
+        if (!arrayType || arrayType->kind != Type::Kind::Array)
+        {
+            unsupported(idx->span, "indexing this type");
+            return "0";
+        }
+        std::string base = emitExpr(idx->base);            // pointer to the array
+        std::string indexTy = llvmType(idx->index->type);
+        std::string index = emitExpr(idx->index);
+
+        if (idx->fromEnd)
+        {
+            // a[^k] -> a[len - k]
+            std::string fixed = freshTemp();
+            line(std::format("{} = sub {} {}, {}", fixed, indexTy, arrayType->arrayLen, index));
+            index = fixed;
+        }
+
+        std::string elemPtr = gepElement(arrayType, base, indexTy, index);
+        Type const* elem = arrayType->elem;
+        if (isAggregate(elem))
+        {
+            return elemPtr;     // aggregate element: hand back the pointer
+        }
+        std::string v = freshTemp();
+        line(std::format("{} = load {}, ptr {}", v, llvmType(elem), elemPtr));
+        return v;
+    }
+
+    case ExprKind::Field:
+    {
+        auto const* field = cast<FieldExpr>(expr);
+        Type const* tupleType = field->base->type;
+        if (!tupleType || tupleType->kind != Type::Kind::Tuple)
+        {
+            unsupported(field->span, "field access on this type");
+            return "0";
+        }
+        std::string base = emitExpr(field->base);       // pointer to the tuple
+        std::string fieldPtr = gepField(tupleType, base, field->index);
+        Type const* fieldType = field->index < tupleType->elems.size()
+            ? tupleType->elems[field->index]
+            : nullptr;
+        if (isAggregate(fieldType))
+        {
+            return fieldPtr;
+        }
+        std::string v = freshTemp();
+        line(std::format("{} = load {}, ptr {}", v, llvmType(fieldType), fieldPtr));
+        return v;
+    }
+
     case ExprKind::Array:
-        unsupported(expr->span, "array literals");
-        return "0";
+    {
+        auto const* arr = cast<ArrayExpr>(expr);
+        Type const* arrayType = arr->type;
+        std::string slot = freshAlloca(llvmType(arrayType));
+        for (std::size_t i = 0; i < arr->elements.size(); ++i)
+        {
+            std::string elemPtr = gepElement(arrayType, slot, "i64", std::to_string(i));
+            std::string v = emitExpr(arr->elements[i]);
+            storeInto(arrayType->elem, v, elemPtr);
+        }
+        return slot;
+    }
+
     case ExprKind::Tuple:
-        unsupported(expr->span, "tuples");
-        return "0";
+    {
+        auto const* tup = cast<TupleExpr>(expr);
+        if (tup->elements.empty())
+        {
+            return "";          // the unit value () has no representation
+        }
+        Type const* tupleType = tup->type;
+        std::string slot = freshAlloca(llvmType(tupleType));
+        for (std::size_t i = 0; i < tup->elements.size(); ++i)
+        {
+            std::string fieldPtr = gepField(tupleType, slot, i);
+            std::string v = emitExpr(tup->elements[i]);
+            storeInto(tupleType->elems[i], v, fieldPtr);
+        }
+        return slot;
+    }
+
     case ExprKind::Range:
         unsupported(expr->span, "ranges outside a for loop");
         return "0";
@@ -727,6 +982,11 @@ std::string CodeGen::emitCall(CallExpr const* call)
         std::string args;
         for (std::size_t i = 0; i < call->args.size(); ++i)
         {
+            if (isAggregate(call->args[i]->type))
+            {
+                unsupported(call->args[i]->span, "passing an array or tuple as an argument");
+                return "0";
+            }
             std::string v = emitExpr(call->args[i]);
             if (i != 0)
             {

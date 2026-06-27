@@ -26,6 +26,7 @@ struct InfixBp
 // Postfix and cast precedences live above every binary operator.
 constexpr int kCallBp = 20;
 constexpr int kIndexBp = 20;
+constexpr int kFieldBp = 20;
 constexpr int kCastBp = 18;
 // Prefix unary operators parse their operand at this power: tighter than `as`
 // (18) so that `-x as i64` groups as `(-x) as i64`.
@@ -617,6 +618,17 @@ Expr* Parser::parseExpr(int minBp)
             continue;
         }
 
+        // Postfix: tuple field access a.0
+        if (k == TokenKind::Dot && kFieldBp >= minBp)
+        {
+            lhs = parseFieldTail(lhs);
+            if (!lhs)
+            {
+                return nullptr;
+            }
+            continue;
+        }
+
         // Cast: value as Type
         if (k == TokenKind::KwAs && kCastBp >= minBp)
         {
@@ -920,6 +932,52 @@ Expr* Parser::parseIndexTail(Expr* base)
         index,
         fromEnd
     );
+}
+
+Expr* Parser::parseFieldTail(Expr* base)
+{
+    advance();      // '.'
+    if (!check(TokenKind::Number))
+    {
+        errorAtCurrent("expected a tuple field index after '.'");
+        return nullptr;
+    }
+    Token const tok = current();
+    advance();
+
+    // The lexer merges `0.1` into one numeric token, so a single `.` access may
+    // carry several dotted indices (t.0.1 == (t.0).1). Walk the digits.
+    std::string_view const text = m_sm.spanText(tok.span);
+    Expr* result = base;
+    std::size_t i = 0;
+    while (i < text.size())
+    {
+        std::uint32_t index = 0;
+        std::size_t const start = i;
+        while (i < text.size() && text[i] >= '0' && text[i] <= '9')
+        {
+            index = index * 10 + static_cast<std::uint32_t>(text[i] - '0');
+            ++i;
+        }
+        if (i == start)
+        {
+            m_diags.error(tok.span, "invalid tuple field index");
+            return nullptr;
+        }
+        result = m_arena.make<FieldExpr>(
+            SourceSpan{ base->span.begin, tok.span.end }, result, index);
+
+        if (i < text.size() && text[i] == '.')
+        {
+            ++i;        // dotted separator between indices
+        }
+        else if (i < text.size())
+        {
+            m_diags.error(tok.span, "invalid tuple field index");
+            return nullptr;
+        }
+    }
+    return result;
 }
 
 // ---------------------------------------------------------------------------

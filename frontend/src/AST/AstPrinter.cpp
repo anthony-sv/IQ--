@@ -313,6 +313,14 @@ void AstPrinter::printExpr(Expr const* expr)
         printExpr(i->index);
         return;
     }
+    case ExprKind::Field:
+    {
+        auto const* f = cast<FieldExpr>(expr);
+        line(std::format("Field .{}", f->index));
+        Indent const indent(m_depth);
+        printExpr(f->base);
+        return;
+    }
     case ExprKind::Cast:
     {
         auto const* c = cast<CastExpr>(expr);

@@ -265,6 +265,13 @@ int DotPrinter::emitExpr(Expr const* expr)
         edge(id, emitExpr(i->index), "index");
         return id;
     }
+    case ExprKind::Field:
+    {
+        auto const* f = cast<FieldExpr>(expr);
+        int const id = node(std::format("Field .{}", f->index));
+        edge(id, emitExpr(f->base), "base");
+        return id;
+    }
     case ExprKind::Cast:
     {
         auto const* c = cast<CastExpr>(expr);

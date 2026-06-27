@@ -318,6 +318,7 @@ enum class ExprKind : std::uint8_t
     Assign,
     Call,
     Index,
+    Field,
     Cast,
     Range,
     Array,
@@ -486,6 +487,24 @@ struct IndexExpr : Expr
 
     constexpr IndexExpr(SourceSpan s, Expr* b, Expr* i, bool end)
         : Expr(Kind, s), base(b), index(i), fromEnd(end)
+    {
+    }
+
+    static bool classof(Expr const* e)
+    {
+        return e->kind == Kind;
+    }
+};
+
+// tuple field access: base.index (e.g. t.0)
+struct FieldExpr : Expr
+{
+    static constexpr ExprKind Kind = ExprKind::Field;
+    Expr* base;
+    std::uint32_t index;
+
+    constexpr FieldExpr(SourceSpan s, Expr* b, std::uint32_t i)
+        : Expr(Kind, s), base(b), index(i)
     {
     }
 
