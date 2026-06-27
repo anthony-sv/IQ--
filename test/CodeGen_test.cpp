@@ -134,11 +134,50 @@ TEST_CASE("codegen: tuple field access lowers to a struct GEP", "[codegen]")
     REQUIRE(cg.contains("getelementptr {"));
 }
 
-TEST_CASE("codegen: passing an aggregate to a function is rejected for now", "[codegen]")
+TEST_CASE("codegen: array element assignment lowers to a GEP + store", "[codegen]")
+{
+    TestCodeGen cg("fn main() { let xs = [1, 2, 3]; xs[0] = 9; print(xs[0]); }");
+    REQUIRE_FALSE(cg.hasErrors());
+    REQUIRE(cg.contains("getelementptr [3 x i32]"));
+    REQUIRE(cg.contains("store i32 9"));
+}
+
+TEST_CASE("codegen: tuple field assignment lowers to a struct GEP + store", "[codegen]")
+{
+    TestCodeGen cg("fn main() { let p = (1, 2); p.1 = 7; print(p.1); }");
+    REQUIRE_FALSE(cg.hasErrors());
+    REQUIRE(cg.contains("getelementptr {"));
+    REQUIRE(cg.contains("store i32 7"));
+}
+
+TEST_CASE("codegen: parallel assignment lowers without error", "[codegen]")
+{
+    TestCodeGen cg("fn main() { let xs = [1, 2, 3]; (xs[0], xs[2]) = (xs[2], xs[0]); print(xs[0]); }");
+    REQUIRE_FALSE(cg.hasErrors());
+}
+
+TEST_CASE("codegen: a function can return a tuple (multiple values)", "[codegen]")
 {
     TestCodeGen cg(R"(
-        fn takes(a: i32) { print(a); }
-        fn main() { let xs = [1, 2]; takes(xs[0]); }
+        fn divmod(a: i32, b: i32) -> (i32, i32) { ret (a / b, a % b); }
+        fn main() { let (q, r) = divmod(17, 5); print(q); print(r); }
     )");
-    REQUIRE_FALSE(cg.hasErrors());   // passing a scalar element is fine
+    REQUIRE_FALSE(cg.hasErrors());
+    REQUIRE(cg.contains("define { i32, i32 } @divmod"));
+}
+
+TEST_CASE("codegen: an array can be passed to and returned from a function", "[codegen]")
+{
+    TestCodeGen cg(R"(
+        fn sum4(xs: [i32; 4]) -> i32 {
+            let t = 0;
+            for i in 0..4 { t += xs[i]; }
+            ret t;
+        }
+        fn make() -> [i32; 3] { ret [1, 2, 3]; }
+        fn main() { let xs = [1, 2, 3, 4]; print(sum4(xs)); let ys = make(); print(ys[0]); }
+    )");
+    REQUIRE_FALSE(cg.hasErrors());
+    REQUIRE(cg.contains("define i32 @sum4([4 x i32]"));
+    REQUIRE(cg.contains("define [3 x i32] @make"));
 }

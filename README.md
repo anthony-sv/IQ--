@@ -7,7 +7,7 @@
 ![Language](https://img.shields.io/badge/written%20in-C%2B%2B23-00599C)
 ![Backend](https://img.shields.io/badge/backend-LLVM%20IR-orange)
 ![Frontend](https://img.shields.io/badge/frontend-hand--written-success)
-![Tests](https://img.shields.io/badge/tests-121%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-137%20passing-brightgreen)
 ![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue)
 
@@ -87,7 +87,9 @@ Every compiler stage is also inspectable on its own:
 
 **Declarations & flow** — `fn` (with a `void` default return), top-level `const`, `let`/`const` locals, `if/else`, `while`, `for x in lo..hi` (`..=` inclusive), `ret`, `break`, `continue`.
 
-**Expressions** — arithmetic, comparisons, short-circuit `&& ||`, unary `- !`, assignment and compound `+= -= *= /= %=`, calls, array indexing `a[i]` and from-end `a[^k]`, tuple field access `t.0`, `as` casts, array/tuple literals, and `print`.
+**Expressions** — arithmetic, comparisons, short-circuit `&& ||`, unary `- !`, assignment and compound `+= -= *= /= %=` (to names, array elements `a[i] = x`, and tuple fields `t.0 = x`), calls, array indexing `a[i]` and from-end `a[^k]`, tuple field access `t.0`, `as` casts, array/tuple literals, and `print`.
+
+**Functions & aggregates** — arrays and tuples can be passed to and returned from functions, so **multiple return values** are simply a returned tuple (`fn divmod(a, b) -> (i32, i32)`). **Parallel assignment** swaps without a temp: `(a, b) = (b, a)`.
 
 **Compile-time guarantees** — name resolution (undeclared / redefined / use-before-declaration), **bidirectional type inference** (untyped literals are pinned by context; **no implicit numeric widening** — use `as`), suffix-vs-annotation conflict detection, **all-paths-return** analysis (it knows a non-breaking `while true` diverges), const-expression array lengths, and mutability checks.
 
@@ -163,6 +165,25 @@ while lo <= hi {
 </tr>
 </table>
 
+In-place **bubble sort** — fixed array, element assignment, swaps:
+
+```rust
+let xs = [5, 2, 8, 1, 9, 3];
+let n = 6;
+let i = 0;
+while i < n {
+    let j = 0;
+    while j < n - 1 - i {
+        if xs[j] > xs[j + 1] {
+            (xs[j], xs[j + 1]) = (xs[j + 1], xs[j]);   // swap, no temp
+        }
+        j += 1;
+    }
+    i += 1;
+}
+for k in 0..n { print(xs[k]); }    // 1 2 3 5 8 9
+```
+
 ### Problem coverage vs. mainstream languages
 
 How far the language reaches today, problem by problem. The mainstream languages can of course do all of these — the point is to show IQ--'s current frontier.
@@ -175,13 +196,13 @@ How far the language reaches today, problem by problem. The mainstream languages
 | Sum / min / max / count over an array | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Linear & binary search (read-only) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Fixed-size tuple records (e.g. a point) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| In-place sorting (bubble / insertion) | ⚠️ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| In-place sorting (bubble / insertion) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Dynamic array / stack / queue | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Hash map / set | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Linked list / tree / graph | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | String processing (length, slicing) | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-✅ supported &nbsp;·&nbsp; ⚠️ *array element assignment isn't lowered yet, so the algorithm type-checks but won't codegen* &nbsp;·&nbsp; ❌ needs language features not built yet (heap, `struct`, generics).
+✅ supported &nbsp;·&nbsp; ❌ needs language features not built yet (heap, `struct`, generics).
 
 ### Feature comparison
 
@@ -193,6 +214,7 @@ How far the language reaches today, problem by problem. The mainstream languages
 | Sized integer types (`i32`/`u64`…) | ✅ | ✅ | ✅ | ✅ | ⚠️ no unsigned | ❌ bignum |
 | No implicit numeric widening | ✅ | ✅ | ❌ | ❌ | ❌ | n/a |
 | Tuples (n-ary) | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Multiple return values (via tuple) | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Pattern destructuring (`let [a,..b,c]`) | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ✅ |
 | Fixed-size arrays | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Dynamic collections / generics | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -209,7 +231,7 @@ Euclid's GCD — IQ-- sits comfortably in the C / Rust family:
 ```rust
 fn gcd(a: i32, b: i32)
         -> i32 {
-    let x = a; let y = b;
+    let (x, y) = (a, b);
     while y != 0 {
         let t = y;
         y = x % y;
@@ -252,8 +274,6 @@ def gcd(a, b):
 
 Being honest about the frontier:
 
-- **Aggregates across function boundaries** — you can build, index, field-access, and destructure arrays/tuples *inside* a function, but passing one as an argument or returning one isn't lowered yet.
-- **Array element assignment** (`a[i] = x`) — type-checks but isn't lowered, so in-place sorting doesn't run yet.
 - **No heap** — no `Vec`, `String` operations, maps, or linked structures.
 - **No `struct`, `match`, generics, or modules** — the pattern grammar and the tuple/field machinery are already in place to make `struct` and `match` the next natural additions.
 
@@ -264,7 +284,7 @@ IQ--/
 ├── frontend/    IQFrontend.vcxproj  — lexer, parser, AST, resolver, type checker
 ├── backend/     IQBackend.vcxproj   — LLVM IR code generation
 ├── driver/      IQ--.vcxproj        — the command-line compiler (IQ--.exe)
-├── test/        IQTests.vcxproj     — Catch2 suite (55 cases, 121 assertions)
+├── test/        IQTests.vcxproj     — Catch2 suite (64 cases, 137 assertions)
 └── iqrun.cs                         — optional .NET 10 helper (ProcessX / Zx)
 ```
 

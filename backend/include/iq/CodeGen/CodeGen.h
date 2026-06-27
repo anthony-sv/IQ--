@@ -51,6 +51,9 @@ private:
 
     // Returns an IR operand (an SSA name like %t3, or a constant like 10).
     std::string emitExpr(Expr const* expr);
+    // Pointer to an assignable location (a name slot, array element, or tuple
+    // field). Empty string if the target isn't a supported lvalue.
+    std::string emitLValueAddr(Expr const* target);
     std::string emitBinary(BinaryExpr const* bin);
     std::string emitShortCircuit(BinaryExpr const* bin);
     std::string emitCall(CallExpr const* call);

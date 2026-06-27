@@ -169,6 +169,19 @@ std::optional<std::int64_t> evalConstInt(
     }
 }
 
+// The binding an assignable target ultimately refers to (walking through array
+// indexing and tuple field access), or null if the target is not an lvalue.
+Sym const* rootBinding(Expr const* target)
+{
+    switch (target->kind)
+    {
+    case ExprKind::Name:  return cast<NameExpr>(target)->sym;
+    case ExprKind::Index: return rootBinding(cast<IndexExpr>(target)->base);
+    case ExprKind::Field: return rootBinding(cast<FieldExpr>(target)->base);
+    default:              return nullptr;
+    }
+}
+
 } // namespace
 
 TypeChecker::TypeChecker(
@@ -318,6 +331,12 @@ void TypeChecker::checkSignature(Decl* decl)
                 param.sym->type = t;
             }
         }
+        // Stash the resolved return type on the function's own Sym (a function
+        // Sym carries no value type otherwise), so codegen can read it back.
+        if (fn->sym)
+        {
+            fn->sym->type = fn->returnType ? resolveType(fn->returnType) : m_types.voidType();
+        }
         return;
     }
 
@@ -358,7 +377,9 @@ void TypeChecker::checkDecl(Decl* decl)
 
 void TypeChecker::checkFn(FnDecl* fn)
 {
-    m_currentReturn = fn->returnType ? resolveType(fn->returnType) : m_types.voidType();
+    m_currentReturn = (fn->sym && fn->sym->type)
+        ? fn->sym->type
+        : (fn->returnType ? resolveType(fn->returnType) : m_types.voidType());
     checkBlock(fn->body);
 
     if (m_currentReturn != m_types.voidType()
@@ -711,13 +732,54 @@ Type const* TypeChecker::infer(Expr* expr)
     case ExprKind::Assign:
     {
         auto* assign = cast<AssignExpr>(expr);
+
+        // Parallel assignment: (a, b, ...) = (...). Each target element must be
+        // its own mutable lvalue; the whole right-hand side is evaluated first.
+        if (auto* tup = dyn_cast<TupleExpr>(assign->target))
+        {
+            if (assign->op != AssignOp::Assign)
+            {
+                errorAt(assign->span, "tuple assignment cannot be compound");
+            }
+            std::vector<Type const*> members;
+            members.reserve(tup->elements.size());
+            for (Expr* e : tup->elements)
+            {
+                members.push_back(infer(e));
+                if (Sym const* root = rootBinding(e))
+                {
+                    if (!root->isMutable)
+                    {
+                        errorAt(e->span, std::format(
+                            "cannot assign to immutable '{}'", m_interner.lookup(root->name)));
+                    }
+                }
+                else
+                {
+                    errorAt(e->span, "the left side of an assignment is not assignable");
+                }
+            }
+            Type const* tupleType = m_types.tupleOf(members);
+            tup->type = tupleType;
+            checkExpr(assign->value, tupleType);
+            result = tupleType;
+            break;
+        }
+
         Type const* target = infer(assign->target);
 
-        if (auto* lhs = dyn_cast<NameExpr>(assign->target);
-            lhs && lhs->sym && !lhs->sym->isMutable)
+        if (Sym const* root = rootBinding(assign->target))
         {
-            errorAt(assign->span, std::format(
-                "cannot assign to immutable '{}'", m_interner.lookup(lhs->name)));
+            if (!root->isMutable)
+            {
+                errorAt(assign->span, std::format(
+                    "cannot assign to immutable '{}'", m_interner.lookup(root->name)));
+            }
+        }
+        else
+        {
+            errorAt(assign->target->span,
+                    "the left side of an assignment is not assignable");
         }
         if (assign->op != AssignOp::Assign && !isNumeric(target) && target != m_types.errorType())
         {

@@ -408,23 +408,12 @@ void CodeGen::emitConstGlobal(ConstDecl const* c)
 
 std::string CodeGen::llvmReturnType(FnDecl const* fn)
 {
-    if (!fn->returnType)
+    // The type checker stored the resolved return type on the function's Sym.
+    if (fn->sym && fn->sym->type)
     {
-        return "void";
+        return llvmType(fn->sym->type);
     }
-    if (auto const* named = dyn_cast<NamedType>(fn->returnType))
-    {
-        std::string_view const n = m_interner.lookup(named->name);
-        if (n == "i32" || n == "u32") { return "i32"; }
-        if (n == "i64" || n == "u64") { return "i64"; }
-        if (n == "f32")    { return "float"; }
-        if (n == "f64")    { return "double"; }
-        if (n == "bool")   { return "i1"; }
-        if (n == "string") { return "ptr"; }
-        if (n == "void")   { return "void"; }
-    }
-    unsupported(fn->returnType->span, "this return type");
-    return "i32";
+    return fn->returnType ? "i32" : "void";
 }
 
 void CodeGen::emitFn(FnDecl const* fn)
@@ -542,13 +531,20 @@ void CodeGen::emitStmt(Stmt const* stmt)
         }
         else if (ret->value)
         {
+            std::string ty = llvmType(ret->value->type);
             if (isAggregate(ret->value->type))
             {
-                unsupported(ret->span, "returning an array or tuple from a function");
-                return;
+                // Aggregates are returned by value: load from their slot, ret it.
+                std::string ptr = emitExpr(ret->value);
+                std::string v = freshTemp();
+                line(std::format("{} = load {}, ptr {}", v, ty, ptr));
+                terminate(std::format("ret {} {}", ty, v));
             }
-            std::string v = emitExpr(ret->value);
-            terminate(std::format("ret {} {}", llvmType(ret->value->type), v));
+            else
+            {
+                std::string v = emitExpr(ret->value);
+                terminate(std::format("ret {} {}", ty, v));
+            }
         }
         else
         {
@@ -748,42 +744,73 @@ std::string CodeGen::emitExpr(Expr const* expr)
     case ExprKind::Assign:
     {
         auto const* assign = cast<AssignExpr>(expr);
-        auto const* target = dyn_cast<NameExpr>(assign->target);
-        if (!target)
-        {
-            unsupported(assign->span, "assignment to this kind of target");
-            return "0";
-        }
-        std::string addr = addrOf(target->sym);
 
-        if (isAggregate(target->type))
+        // Parallel assignment: (a, b, ...) = (...). Materialize the whole RHS
+        // FIRST, then store each field, so `(a, b) = (b, a)` swaps correctly.
+        if (auto const* tup = dyn_cast<TupleExpr>(assign->target))
+        {
+            Type const* tupleType = assign->value->type;
+            std::string src = emitExpr(assign->value);      // RHS fully built
+            for (std::size_t i = 0; i < tup->elements.size(); ++i)
+            {
+                std::string dst = emitLValueAddr(tup->elements[i]);
+                if (dst.empty())
+                {
+                    continue;
+                }
+                Type const* fieldType = (tupleType && i < tupleType->elems.size())
+                    ? tupleType->elems[i] : nullptr;
+                std::string fieldPtr = gepField(tupleType, src, i);
+                if (isAggregate(fieldType))
+                {
+                    copyAggregate(fieldType, fieldPtr, dst);
+                }
+                else
+                {
+                    std::string v = freshTemp();
+                    line(std::format("{} = load {}, ptr {}", v, llvmType(fieldType), fieldPtr));
+                    line(std::format("store {} {}, ptr {}", llvmType(fieldType), v, dst));
+                }
+            }
+            return src;
+        }
+
+        Type const* targetType = assign->target->type;
+        std::string addr = emitLValueAddr(assign->target);
+        if (addr.empty())
+        {
+            return "0";     // unsupported target, already reported
+        }
+
+        if (isAggregate(targetType))
         {
             std::string src = emitExpr(assign->value);     // a pointer
-            copyAggregate(target->type, src, addr);
+            copyAggregate(targetType, src, addr);
             return addr;
         }
 
-        std::string ty = llvmType(target->type);
-        std::string rhs = emitExpr(assign->value);
+        std::string ty = llvmType(targetType);
 
         if (assign->op == AssignOp::Assign)
         {
+            std::string rhs = emitExpr(assign->value);
             line(std::format("store {} {}, ptr {}", ty, rhs, addr));
             return rhs;
         }
 
         std::string cur = freshTemp();
         line(std::format("{} = load {}, ptr {}", cur, ty, addr));
+        std::string rhs = emitExpr(assign->value);
         std::string res = freshTemp();
-        bool const flt = isFloat(target->type);
+        bool const flt = isFloat(targetType);
         std::string op;
         switch (assign->op)
         {
         case AssignOp::Add: op = flt ? "fadd" : "add"; break;
         case AssignOp::Sub: op = flt ? "fsub" : "sub"; break;
         case AssignOp::Mul: op = flt ? "fmul" : "mul"; break;
-        case AssignOp::Div: op = flt ? "fdiv" : (isSignedKind(target->type->kind) ? "sdiv" : "udiv"); break;
-        case AssignOp::Rem: op = flt ? "frem" : (isSignedKind(target->type->kind) ? "srem" : "urem"); break;
+        case AssignOp::Div: op = flt ? "fdiv" : (isSignedKind(targetType->kind) ? "sdiv" : "udiv"); break;
+        case AssignOp::Rem: op = flt ? "frem" : (isSignedKind(targetType->kind) ? "srem" : "urem"); break;
         case AssignOp::Assign: break;
         }
         line(std::format("{} = {} {} {}, {}", res, op, ty, cur, rhs));
@@ -798,57 +825,21 @@ std::string CodeGen::emitExpr(Expr const* expr)
         return emitCast(cast<CastExpr>(expr));
 
     case ExprKind::Index:
-    {
-        auto const* idx = cast<IndexExpr>(expr);
-        Type const* arrayType = idx->base->type;
-        if (!arrayType || arrayType->kind != Type::Kind::Array)
-        {
-            unsupported(idx->span, "indexing this type");
-            return "0";
-        }
-        std::string base = emitExpr(idx->base);            // pointer to the array
-        std::string indexTy = llvmType(idx->index->type);
-        std::string index = emitExpr(idx->index);
-
-        if (idx->fromEnd)
-        {
-            // a[^k] -> a[len - k]
-            std::string fixed = freshTemp();
-            line(std::format("{} = sub {} {}, {}", fixed, indexTy, arrayType->arrayLen, index));
-            index = fixed;
-        }
-
-        std::string elemPtr = gepElement(arrayType, base, indexTy, index);
-        Type const* elem = arrayType->elem;
-        if (isAggregate(elem))
-        {
-            return elemPtr;     // aggregate element: hand back the pointer
-        }
-        std::string v = freshTemp();
-        line(std::format("{} = load {}, ptr {}", v, llvmType(elem), elemPtr));
-        return v;
-    }
-
     case ExprKind::Field:
     {
-        auto const* field = cast<FieldExpr>(expr);
-        Type const* tupleType = field->base->type;
-        if (!tupleType || tupleType->kind != Type::Kind::Tuple)
+        // Reading an element/field: take its address, then load a scalar (or
+        // hand back the pointer if the element is itself an aggregate).
+        std::string addr = emitLValueAddr(expr);
+        if (addr.empty())
         {
-            unsupported(field->span, "field access on this type");
             return "0";
         }
-        std::string base = emitExpr(field->base);       // pointer to the tuple
-        std::string fieldPtr = gepField(tupleType, base, field->index);
-        Type const* fieldType = field->index < tupleType->elems.size()
-            ? tupleType->elems[field->index]
-            : nullptr;
-        if (isAggregate(fieldType))
+        if (isAggregate(expr->type))
         {
-            return fieldPtr;
+            return addr;
         }
         std::string v = freshTemp();
-        line(std::format("{} = load {}, ptr {}", v, llvmType(fieldType), fieldPtr));
+        line(std::format("{} = load {}, ptr {}", v, llvmType(expr->type), addr));
         return v;
     }
 
@@ -889,6 +880,53 @@ std::string CodeGen::emitExpr(Expr const* expr)
         return "0";
     }
     return "0";
+}
+
+std::string CodeGen::emitLValueAddr(Expr const* target)
+{
+    switch (target->kind)
+    {
+    case ExprKind::Name:
+        return addrOf(cast<NameExpr>(target)->sym);
+
+    case ExprKind::Index:
+    {
+        auto const* idx = cast<IndexExpr>(target);
+        Type const* arrayType = idx->base->type;
+        if (!arrayType || arrayType->kind != Type::Kind::Array)
+        {
+            unsupported(idx->span, "indexing this type");
+            return "";
+        }
+        std::string base = emitExpr(idx->base);             // pointer to the array
+        std::string indexTy = llvmType(idx->index->type);
+        std::string index = emitExpr(idx->index);
+        if (idx->fromEnd)
+        {
+            std::string fixed = freshTemp();                // a[^k] -> a[len - k]
+            line(std::format("{} = sub {} {}, {}", fixed, indexTy, arrayType->arrayLen, index));
+            index = fixed;
+        }
+        return gepElement(arrayType, base, indexTy, index);
+    }
+
+    case ExprKind::Field:
+    {
+        auto const* field = cast<FieldExpr>(target);
+        Type const* tupleType = field->base->type;
+        if (!tupleType || tupleType->kind != Type::Kind::Tuple)
+        {
+            unsupported(field->span, "field access on this type");
+            return "";
+        }
+        std::string base = emitExpr(field->base);           // pointer to the tuple
+        return gepField(tupleType, base, field->index);
+    }
+
+    default:
+        unsupported(target->span, "assignment to this kind of target");
+        return "";
+    }
 }
 
 std::string CodeGen::emitBinary(BinaryExpr const* bin)
@@ -982,17 +1020,21 @@ std::string CodeGen::emitCall(CallExpr const* call)
         std::string args;
         for (std::size_t i = 0; i < call->args.size(); ++i)
         {
-            if (isAggregate(call->args[i]->type))
-            {
-                unsupported(call->args[i]->span, "passing an array or tuple as an argument");
-                return "0";
-            }
+            Type const* argType = call->args[i]->type;
+            std::string argTy = llvmType(argType);
             std::string v = emitExpr(call->args[i]);
+            if (isAggregate(argType))
+            {
+                // Pass aggregates by value: load the whole thing from its slot.
+                std::string loaded = freshTemp();
+                line(std::format("{} = load {}, ptr {}", loaded, argTy, v));
+                v = loaded;
+            }
             if (i != 0)
             {
                 args += ", ";
             }
-            args += std::format("{} {}", llvmType(call->args[i]->type), v);
+            args += std::format("{} {}", argTy, v);
         }
 
         std::string retIr = llvmType(call->type);
@@ -1004,6 +1046,14 @@ std::string CodeGen::emitCall(CallExpr const* call)
         }
         std::string t = freshTemp();
         line(std::format("{} = call {} @{}({})", t, retIr, name, args));
+        if (isAggregate(call->type))
+        {
+            // Store the returned aggregate into a slot and hand back the pointer,
+            // matching the aggregates-by-pointer model used everywhere else.
+            std::string slot = freshAlloca(retIr);
+            line(std::format("store {} {}, ptr {}", retIr, t, slot));
+            return slot;
+        }
         return t;
     }
 

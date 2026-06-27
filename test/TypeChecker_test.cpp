@@ -173,6 +173,36 @@ TEST_CASE("typecheck: assigning to an immutable binding is an error", "[typechec
     REQUIRE(tc.hasErrors());
 }
 
+TEST_CASE("typecheck: assigning through an immutable binding's element is an error", "[typecheck]")
+{
+    TestCheck tc("fn main() { const xs = [1, 2, 3]; xs[0] = 9; }");
+    REQUIRE(tc.hasErrors());
+}
+
+TEST_CASE("typecheck: assigning to a non-lvalue is an error", "[typecheck]")
+{
+    TestCheck tc("fn main() { 1 = 2; }");
+    REQUIRE(tc.hasErrors());
+}
+
+TEST_CASE("typecheck: parallel assignment swaps two lvalues", "[typecheck]")
+{
+    TestCheck tc("fn main() { let a = 1; let b = 2; (a, b) = (b, a); }");
+    REQUIRE_FALSE(tc.hasErrors());
+}
+
+TEST_CASE("typecheck: parallel assignment arity must match", "[typecheck]")
+{
+    TestCheck tc("fn main() { let a = 1; let b = 2; (a, b) = (1, 2, 3); }");
+    REQUIRE(tc.hasErrors());
+}
+
+TEST_CASE("typecheck: a non-lvalue in a tuple target is an error", "[typecheck]")
+{
+    TestCheck tc("fn main() { let a = 1; (a, 5) = (2, 3); }");
+    REQUIRE(tc.hasErrors());
+}
+
 TEST_CASE("typecheck: indexing a non-array is an error", "[typecheck]")
 {
     TestCheck tc("fn main() { let a: i32 = 1; let b = a[0]; }");
